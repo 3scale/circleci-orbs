@@ -1,0 +1,74 @@
+version: 2.1
+
+description: |
+  Install the Origin Community Distribution of Kubernetes that powers Red Hat OpenShift.
+  
+executors:
+  machine:
+    machine:
+      docker_layer_caching: true
+    resource_class: large
+
+commands:
+  observe:
+    steps:
+      - run:
+          name: Observe OKD Pod changes
+          command: |
+            oc observe pods --all-namespaces --maximum-errors=-1 --no-headers --object-env-var=OBJECT --type-env-var=TYPE -- jq -n --raw-output 'env.OBJECT | fromjson | "\(env.TYPE) \(.kind) \(.metadata.name) started at \(.status.startTime) (\(.status.phase)) \(.status.conditions // [] | map("\(.type): \(.status) @ \(.lastTransitionTime)") | join(", "))"'
+          background: true
+
+  status:
+    parameters:
+      report_name:
+        type: string
+        default: "events"
+
+    steps:
+      - run:
+          name: Collect OKD events and status
+          command: |
+            mkdir -p reports
+            oc status --all-namespaces
+            oc get events --all-namespaces -o json > reports/<< parameters.report_name >>.json
+          when: always
+          working_directory: /tmp
+      - store_artifacts:
+          path: /tmp/reports
+
+  install:
+    parameters:
+      version:
+        type: string
+        default: v3.11.0-0cbc58b
+      public_hostname:
+        type: string
+        default: 127.0.0.1
+      routing_suffix:
+        type: string
+        default: lvh.me
+    steps:
+      - run:
+          name: Install OKD Client Tools
+          working_directory: /tmp
+          command: |
+            curl --fail -L  https://github.com/openshift/origin/releases/download/$(echo "<< parameters.version >>" | cut -d- -f1)/openshift-origin-client-tools-<< parameters.version >>-linux-64bit.tar.gz | tar -xzf- --strip-components=1 -C .
+            sudo mv oc kubectl /usr/local/bin/
+      - run:
+          name: Configure Docker
+          command: |
+            echo '{"insecure-registries": ["172.30.0.0/16"]}' | sudo tee --append /etc/docker/daemon.json
+            sudo service docker restart
+      - run:
+          name: Start and Configure OKD Cluster
+          command: |
+            oc cluster up --public-hostname=<< parameters.public_hostname >> --routing-suffix=<< parameters.routing_suffix >> \
+              --enable='*' --enable=-centos-imagestreams --enable=-sample-templates
+              # --enable=persistent-volumes --enable=registry --enable=router --enable=web-console
+
+            oc login -u system:admin --insecure-skip-tls-verify=true > /dev/null
+            oc adm policy add-cluster-role-to-user cluster-admin developer > /dev/null
+            oc login -u developer --insecure-skip-tls-verify=true > /dev/null
+
+            oc wait --for=condition=available dc/docker-registry --namespace=default || oc rollout retry dc/docker-registry --namespace=default
+            oc wait --for=condition=available dc/router --namespace=default || oc rollout retry dc/router --namespace=default
