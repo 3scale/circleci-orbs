@@ -47,6 +47,14 @@ commands:
       routing_suffix:
         type: string
         default: lvh.me
+      router_reload_interval:
+        type: integer
+        default: 5
+      router_log_level:
+        type: enum
+        enum:
+          - warning
+          - debug
     steps:
       - run:
           name: Install OKD Client Tools
@@ -69,6 +77,10 @@ commands:
             oc login -u system:admin --insecure-skip-tls-verify=true > /dev/null
             oc adm policy add-cluster-role-to-user cluster-admin developer > /dev/null
             oc login -u developer --insecure-skip-tls-verify=true > /dev/null
+
+            oc adm router --service-account=router --extended-logging --namespace=default -o yaml --local --dry-run | oc apply -f- --namespace=default
+            oc adm router --service-account=router --extended-logging --namespace=default -o yaml --dry-run | oc replace -f- --namespace=default
+            oc set env dc/router RELOAD_INTERVAL=<< parameters.router_reload_interval >> ROUTER_LOG_LEVEL=<< parameters.router_log_level >> --namespace=default
 
             oc wait --for=condition=available dc/docker-registry --namespace=default || oc rollout retry dc/docker-registry --namespace=default
             oc wait --for=condition=available dc/router --namespace=default || oc rollout retry dc/router --namespace=default
